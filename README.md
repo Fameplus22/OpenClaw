@@ -117,3 +117,22 @@ The EA now only scans tradable broker symbols in this target set:
 - A small fast-stock list (NVDA, TSLA, AAPL, META, AMZN, MSFT, AMD, NFLX)
 
 This removes invalid/non-carried assets from execution attempts and cleans up logs.
+
+
+## 100x Redesign (implemented)
+The MT5 EA now includes:
+1. Multi-timeframe confirmation (M5 signal must align with H1 EMA50 slope)
+2. Regime classification (ADX + ATR percentile proxy + Bollinger width) with strategy-regime gating
+3. Portfolio-level directional risk cap (blocks over-concentrated long/short exposure)
+4. Smarter evolution using strategy × regime × asset-class Sharpe-style learning table
+5. Kelly-inspired dynamic sizing (risk scales with rolling edge)
+6. Sniper entries via pullback limit orders (EMA10) with short expiry
+7. Session + news awareness filters (`news_windows.csv` optional)
+8. Adaptive stop-loss and strategy-specific partial-take-profit behavior
+9. Walk-forward validation utility: `mt5/walkforward.py` (train 6m / test 2m rolling)
+10. Expanded metrics in state output (`avg_pnl`, `recovery_factor`)
+
+### News window file format
+Place `news_windows.csv` in MT5 Files directory. Each row:
+`YYYY.MM.DD HH:MM,YYYY.MM.DD HH:MM`
+(UTC start, UTC end)
