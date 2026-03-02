@@ -241,7 +241,9 @@ bool MTFTrendAgrees(const string sym, int direction)
 bool IsSessionAllowed(const string sym)
 {
    if(!InpUseSessionFilter) return true;
-   int h = TimeHour(TimeGMT());
+   MqlDateTime gmt;
+   TimeToStruct(TimeGMT(), gmt);
+   int h = gmt.hour;
    AssetClassType c = AssetClassOf(sym);
    if(c==ASSET_FX) return (h>=6 && h<=20);      // London + NY overlap focus
    if(c==ASSET_METAL) return (h>=7 && h<=21);
@@ -656,7 +658,7 @@ void WriteOpenPositionsSnapshot()
 
       FileWrite(fh,
                 TimeToString(now,TIME_DATE|TIME_SECONDS),
-                (string)ticket,
+                ticket,
                 sym,
                 aid,
                 strat,
@@ -668,7 +670,7 @@ void WriteOpenPositionsSnapshot()
                 DoubleToString(tp,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS)),
                 DoubleToString(pnl,2),
                 DoubleToString(swap,2),
-                (string)magic);
+                magic);
    }
    FileClose(fh);
 }
