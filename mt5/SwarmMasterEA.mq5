@@ -610,7 +610,7 @@ void WriteState()
    datetime now=TimeCurrent();
    for(int i=0;i<10;i++)
    {
-      double wr=(agents[i].trades>0?(double)agents[i].wins/agents[i].trades:0.0;
+      double wr=(agents[i].trades>0?(double)agents[i].wins/agents[i].trades:0.0);
       // #10 real metrics proxy fields added: expectancy and recovery factor proxies
       double avgPnL=(agents[i].trades>0?agents[i].realizedPnl/agents[i].trades:0.0);
       double recovery=(MathAbs(agents[i].realizedPnl)>0?agents[i].realizedPnl/MathMax(1.0,MathAbs(avgPnL*3.0)):0.0);
@@ -684,9 +684,14 @@ int OnInit()
       agents[i].magic=990000+i+1;
    }
 
-   ArrayInitialize(statN, 0);
-   ArrayInitialize(statPnL, 0.0);
-   ArrayInitialize(statPnLSq, 0.0);
+   for(int a=0;a<10;a++)
+      for(int r=0;r<4;r++)
+         for(int c=0;c<4;c++)
+         {
+            statN[a][r][c]=0;
+            statPnL[a][r][c]=0.0;
+            statPnLSq[a][r][c]=0.0;
+         }
 
    BuildUniverse();
 
