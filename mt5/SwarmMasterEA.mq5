@@ -761,3 +761,89 @@ void OnTick()
    WriteState();
    WriteOpenPositionsSnapshot();
 }
+
+
+// ========================== Tester Metrics ==========================
+double g_testerNetProfit = 0.0;
+double g_testerGrossProfit = 0.0;
+double g_testerGrossLoss = 0.0;
+double g_testerMaxDD = 0.0;
+double g_testerRecovery = 0.0;
+double g_testerPF = 0.0;
+double g_testerSharpeProxy = 0.0;
+
+double ComputeTesterSharpeProxy()
+{
+   datetime from=TimeCurrent()-86400*365*5, to=TimeCurrent();
+   if(!HistorySelect(from,to)) return 0.0;
+
+   double pnl[];
+   ArrayResize(pnl,0);
+   int deals=HistoryDealsTotal();
+   for(int i=0;i<deals;i++)
+   {
+      ulong ticket=HistoryDealGetTicket(i);
+      if(ticket==0) continue;
+      long entry=HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry!=DEAL_ENTRY_OUT) continue;
+      double v=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_COMMISSION);
+      int n=ArraySize(pnl);
+      ArrayResize(pnl,n+1);
+      pnl[n]=v;
+   }
+   int n=ArraySize(pnl);
+   if(n<2) return 0.0;
+
+   double mean=0.0;
+   for(int i=0;i<n;i++) mean+=pnl[i];
+   mean/=n;
+   double var=0.0;
+   for(int i=0;i<n;i++){ double d=pnl[i]-mean; var+=d*d; }
+   var/=n;
+   if(var<=1e-9) return 0.0;
+   return mean/MathSqrt(var);
+}
+
+double OnTester()
+{
+   double initBal = TesterStatistics(STAT_INITIAL_DEPOSIT);
+   double net = TesterStatistics(STAT_PROFIT);
+   double grossProfit = TesterStatistics(STAT_GROSS_PROFIT);
+   double grossLossAbs = MathAbs(TesterStatistics(STAT_GROSS_LOSS));
+   double maxDdAbs = MathAbs(TesterStatistics(STAT_BALANCE_DD));
+
+   double pf = (grossLossAbs>0.0 ? grossProfit/grossLossAbs : 0.0);
+   double recovery = (maxDdAbs>0.0 ? net/maxDdAbs : 0.0);
+   double sharpe = ComputeTesterSharpeProxy();
+
+   g_testerNetProfit = net;
+   g_testerGrossProfit = grossProfit;
+   g_testerGrossLoss = grossLossAbs;
+   g_testerMaxDD = maxDdAbs;
+   g_testerRecovery = recovery;
+   g_testerPF = pf;
+   g_testerSharpeProxy = sharpe;
+
+   // Composite fitness: prioritize risk-adjusted returns
+   double fitness = (sharpe*3.0) + (pf*2.0) + (recovery*2.0) + (net/MathMax(initBal,1.0));
+   return fitness;
+}
+
+void OnTesterPass()
+{
+   int fh = FileOpen("tester_pass_metrics.csv", FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI, ',');
+   if(fh==INVALID_HANDLE) return;
+
+   if(FileSize(fh)==0)
+      FileWrite(fh,"timestamp","net_profit","profit_factor","max_dd","recovery","sharpe_proxy");
+
+   FileSeek(fh,0,SEEK_END);
+   FileWrite(fh,
+             TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+             DoubleToString(g_testerNetProfit,2),
+             DoubleToString(g_testerPF,4),
+             DoubleToString(g_testerMaxDD,2),
+             DoubleToString(g_testerRecovery,4),
+             DoubleToString(g_testerSharpeProxy,4));
+   FileClose(fh);
+}

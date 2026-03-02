@@ -146,3 +146,13 @@ Added `backtest_pack/` with:
 - usage guide (`backtest_pack/README.md`)
 
 This is intended to validate strategy robustness before live deployment.
+
+
+## MQL5-native backtesting workflow (preferred)
+Backtesting/optimization is now native to MT5 Strategy Tester:
+- `OnTester()` returns a composite fitness score (Sharpe proxy + PF + recovery + net return)
+- `OnTesterPass()` writes pass metrics to `tester_pass_metrics.csv` in MT5 Files
+
+Use MT5 Optimization directly with 7m / 12m / 24m date ranges and compare passes by the custom fitness criterion.
+
+> Note: `backtest_pack/` is optional for external report aggregation only; core validation is now fully MQL5-native.
