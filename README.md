@@ -84,3 +84,17 @@ A native MT5 Expert Advisor is included at:
 - This EA is MT5-native (MQL5), not Python.
 - It runs 10 strategy-agents internally using magic numbers.
 - It writes `swarm_state.csv` (MQL5 Files directory) for external monitoring bridges.
+
+
+### New trade management behavior
+- Risk distance is now configured in pips (`InpRiskPips`, default 20 pips).
+- Big take-profit is `InpRiskPips * InpBigTPMultiplier` (default 20 * 5 = 100 pips).
+- Partial profit-taking ladder closes portions at +20, +40, +60, +80 pips (based on risk-pips multiples), while runner targets the big TP.
+- EA scans and trades across the broker forex universe (not only the chart symbol).
+
+
+### Bot autonomy + hard rule
+- Stop-loss is **not fixed**. Each bot computes dynamic SL from volatility (ATR-based) + strategy profile.
+- Each bot has its own risk profile (`riskPct`) and reward target (`rrTarget`).
+- Each bot keeps its own strategy logic and can be recycled to a new profile when underperforming.
+- **Hard constraint enforced:** max `2` open positions per bot per asset (`InpMaxPositionsPerAgentPerAsset`).

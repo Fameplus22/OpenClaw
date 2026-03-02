@@ -1,16 +1,15 @@
 #property strict
 #include <Trade/Trade.mqh>
 
-input double   InpRiskPercent           = 1.0;
-input double   InpMinLot                = 0.01;
-input double   InpMaxLot                = 0.05;
-input double   InpTakeProfitRiskFactor  = 0.50;
-input double   InpStopLossRiskFactor    = 1.00;
-input int      InpEvalTrades            = 30;
-input double   InpMinProfitFactor       = 1.02;
-input int      InpSlippagePoints        = 20;
-input bool     InpWriteDashboardFile    = true;
-input string   InpDashboardFile         = "swarm_state.csv";
+// Hard rule enforced: max 2 open positions per agent per asset
+input int      InpMaxPositionsPerAgentPerAsset = 2;
+input double   InpMinLot                        = 0.01;
+input double   InpMaxLot                        = 0.05;
+input int      InpEvalTrades                    = 30;
+input double   InpMinProfitFactor               = 1.02;
+input int      InpSlippagePoints                = 20;
+input bool     InpWriteDashboardFile            = true;
+input string   InpDashboardFile                 = "swarm_state.csv";
 
 enum StrategyType
 {
@@ -34,71 +33,115 @@ struct Agent
    int      trades;
    int      wins;
    double   realizedPnl;
+   double   riskPct;          // each bot's own risk model
+   double   rrTarget;         // each bot's own reward model
    ulong    magic;
+};
+
+struct PositionTrack
+{
+   ulong  ticket;
+   double initialVolume;
+   double riskPips;           // ticket-specific risk from its own SL
+   bool   tp1;
+   bool   tp2;
+   bool   tp3;
+   bool   tp4;
 };
 
 CTrade trade;
 Agent agents[10];
-datetime lastBar = 0;
+PositionTrack tracks[];
+string forexSymbols[];
+datetime lastBarTimes[];
 int fileHandle = INVALID_HANDLE;
 
-double GetBufferValue(int handle, int shift)
+double PipSize(const string sym)
 {
-   if(handle == INVALID_HANDLE)
-      return 0.0;
-   double buf[];
-   ArraySetAsSeries(buf, true);
-   if(CopyBuffer(handle, 0, shift, 1, buf) <= 0)
-      return 0.0;
-   return buf[0];
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(digits == 3 || digits == 5) return point * 10.0;
+   return point;
 }
 
-double MAValue(ENUM_MA_METHOD method, int period, ENUM_APPLIED_PRICE price, int shift)
+bool IsForexSymbol(const string sym)
 {
-   int h = iMA(_Symbol, PERIOD_M5, period, 0, method, price);
-   double v = GetBufferValue(h, shift);
+   string base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE);
+   string profit = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
+   long mode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(mode == SYMBOL_TRADE_MODE_DISABLED) return false;
+   return (StringLen(base) == 3 && StringLen(profit) == 3);
+}
+
+void BuildForexUniverse()
+{
+   ArrayResize(forexSymbols, 0);
+   int total = SymbolsTotal(false);
+   for(int i=0; i<total; i++)
+   {
+      string sym = SymbolName(i, false);
+      if(sym == "" || !IsForexSymbol(sym)) continue;
+      SymbolSelect(sym, true);
+      int n = ArraySize(forexSymbols);
+      ArrayResize(forexSymbols, n + 1);
+      forexSymbols[n] = sym;
+   }
+   ArrayResize(lastBarTimes, ArraySize(forexSymbols));
+   for(int j=0; j<ArraySize(lastBarTimes); j++) lastBarTimes[j] = 0;
+   Print("Forex universe loaded: ", ArraySize(forexSymbols), " symbols");
+}
+
+int PositionsByAgentAndSymbol(ulong magic, const string sym)
+{
+   int count = 0;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong t = PositionGetTicket(i);
+      if(t == 0 || !PositionSelectByTicket(t)) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) == magic && PositionGetString(POSITION_SYMBOL) == sym)
+         count++;
+   }
+   return count;
+}
+
+double GetBufferValue(int handle, int buffer, int shift)
+{
+   if(handle == INVALID_HANDLE) return 0.0;
+   double data[]; ArraySetAsSeries(data, true);
+   if(CopyBuffer(handle, buffer, shift, 1, data) <= 0) return 0.0;
+   return data[0];
+}
+
+double MAValue(const string sym, ENUM_MA_METHOD method, int period, ENUM_APPLIED_PRICE price, int shift)
+{
+   int h = iMA(sym, PERIOD_M5, period, 0, method, price);
+   double v = GetBufferValue(h, 0, shift);
    IndicatorRelease(h);
    return v;
 }
 
-double RSIValue(int period, int shift)
+double RSIValue(const string sym, int period, int shift)
 {
-   int h = iRSI(_Symbol, PERIOD_M5, period, PRICE_CLOSE);
-   double v = GetBufferValue(h, shift);
+   int h = iRSI(sym, PERIOD_M5, period, PRICE_CLOSE);
+   double v = GetBufferValue(h, 0, shift);
    IndicatorRelease(h);
    return v;
 }
 
-double ATRValue(int period, int shift)
+double ATRValue(const string sym, int period, int shift)
 {
-   int h = iATR(_Symbol, PERIOD_M5, period);
-   double v = GetBufferValue(h, shift);
+   int h = iATR(sym, PERIOD_M5, period);
+   double v = GetBufferValue(h, 0, shift);
    IndicatorRelease(h);
    return v;
 }
 
-void MACDValues(double &mainVal, double &signalVal)
+void MACDValues(const string sym, double &mainVal, double &signalVal)
 {
-   int h = iMACD(_Symbol, PERIOD_M5, 12, 26, 9, PRICE_CLOSE);
-   if(h == INVALID_HANDLE)
-   {
-      mainVal = 0.0;
-      signalVal = 0.0;
-      return;
-   }
-   double m[], s[];
-   ArraySetAsSeries(m, true);
-   ArraySetAsSeries(s, true);
-   if(CopyBuffer(h, 0, 0, 1, m) <= 0 || CopyBuffer(h, 1, 0, 1, s) <= 0)
-   {
-      mainVal = 0.0;
-      signalVal = 0.0;
-   }
-   else
-   {
-      mainVal = m[0];
-      signalVal = s[0];
-   }
+   int h = iMACD(sym, PERIOD_M5, 12, 26, 9, PRICE_CLOSE);
+   if(h == INVALID_HANDLE) { mainVal = 0.0; signalVal = 0.0; return; }
+   mainVal = GetBufferValue(h, 0, 0);
+   signalVal = GetBufferValue(h, 1, 0);
    IndicatorRelease(h);
 }
 
@@ -112,145 +155,232 @@ int OnInit()
       agents[i].trades = 0;
       agents[i].wins = 0;
       agents[i].realizedPnl = 0.0;
+      agents[i].riskPct = 0.20 + (0.10 * (i % 4)); // 0.2%, 0.3%, 0.4%, 0.5%
+      agents[i].rrTarget = 3.0 + (i % 3);          // 3R..5R
       agents[i].magic = 990000 + i + 1;
    }
+
+   BuildForexUniverse();
 
    if(InpWriteDashboardFile)
    {
       fileHandle = FileOpen(InpDashboardFile, FILE_WRITE|FILE_CSV|FILE_ANSI, ',');
       if(fileHandle != INVALID_HANDLE)
       {
-         FileWrite(fileHandle, "timestamp", "agent_id", "strategy", "alive", "trades", "wins", "win_rate", "realized_pnl");
+         FileWrite(fileHandle, "timestamp", "symbol", "agent_id", "strategy", "risk_pct", "rr", "alive", "trades", "wins", "win_rate", "realized_pnl");
          FileFlush(fileHandle);
       }
    }
-
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
-   if(fileHandle != INVALID_HANDLE)
-      FileClose(fileHandle);
+   if(fileHandle != INVALID_HANDLE) FileClose(fileHandle);
 }
 
 void OnTick()
 {
-   datetime barTime = iTime(_Symbol, PERIOD_M5, 0);
-   if(barTime == lastBar)
-      return;
-   lastBar = barTime;
-
+   ManagePartialTakeProfits();
    RefreshClosedTrades();
 
-   for(int i=0; i<10; i++)
+   for(int s=0; s<ArraySize(forexSymbols); s++)
    {
-      if(!agents[i].alive || HasOpenPosition(agents[i].magic))
-         continue;
+      string sym = forexSymbols[s];
+      datetime barTime = iTime(sym, PERIOD_M5, 0);
+      if(barTime == 0 || barTime == lastBarTimes[s]) continue;
+      lastBarTimes[s] = barTime;
 
-      int signal = GetSignal(agents[i].strategy);
-      if(signal != 0)
-         PlaceAgentTrade(i, signal);
+      for(int i=0; i<10; i++)
+      {
+         if(!agents[i].alive) continue;
+         if(PositionsByAgentAndSymbol(agents[i].magic, sym) >= InpMaxPositionsPerAgentPerAsset) continue; // hard rule
+
+         int signal = GetSignal(agents[i].strategy, sym);
+         if(signal != 0) PlaceAgentTrade(i, signal, sym);
+      }
    }
 
    ReplaceUnderperformers();
    WriteState();
 }
 
-bool HasOpenPosition(ulong magic)
+void ComputeBotStopsAndTargets(int idx, const string sym, int signal, double entry, double &sl, double &tp, double &riskPips)
 {
-   for(int i=PositionsTotal()-1; i>=0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket))
-         continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC) == magic && PositionGetString(POSITION_SYMBOL) == _Symbol)
-         return true;
-   }
-   return false;
+   // each bot builds its own stop from volatility + strategy profile
+   double atr = ATRValue(sym, 14, 0);
+   double pip = PipSize(sym);
+   if(pip <= 0) pip = SymbolInfoDouble(sym, SYMBOL_POINT);
+
+   double stratMult = 1.2 + (agents[idx].strategy % 4) * 0.4; // strategy-specific stop behavior
+   double riskDist = MathMax(atr * stratMult, 8.0 * pip);     // never too tiny
+   riskPips = riskDist / pip;
+
+   double tpDist = riskDist * agents[idx].rrTarget;
+   sl = (signal > 0) ? entry - riskDist : entry + riskDist;
+   tp = (signal > 0) ? entry + tpDist : entry - tpDist;
 }
 
-void PlaceAgentTrade(int idx, int signal)
+double ComputeLot(const string sym, double riskDistPrice, double riskPct)
 {
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double entry = (signal > 0 ? ask : bid);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskCash = balance * (riskPct / 100.0);
 
-   double riskDistance = entry * (InpRiskPercent / 100.0);
-   double slDistance = riskDistance * InpStopLossRiskFactor;
-   double tpDistance = riskDistance * InpTakeProfitRiskFactor;
+   // approximate cash loss per 1 lot at riskDistPrice
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0 || tickValue <= 0)
+      return InpMinLot;
 
-   double lot = ComputeLot(entry);
-   double sl = (signal > 0 ? entry - slDistance : entry + slDistance);
-   double tp = (signal > 0 ? entry + tpDistance : entry - tpDistance);
+   double lossPerLot = (riskDistPrice / tickSize) * tickValue;
+   if(lossPerLot <= 0) return InpMinLot;
 
-   trade.SetExpertMagicNumber((long)agents[idx].magic);
-   trade.SetDeviationInPoints(InpSlippagePoints);
-
-   bool ok = (signal > 0)
-             ? trade.Buy(lot, _Symbol, 0.0, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "SwarmBuy")
-             : trade.Sell(lot, _Symbol, 0.0, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), "SwarmSell");
-
-   if(!ok)
-      Print("Agent ", agents[idx].id, " order failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
-}
-
-double ComputeLot(double entry)
-{
-   double raw = (AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPercent / 100.0)) / MathMax(entry, 0.00001);
+   double raw = riskCash / lossPerLot;
    double clipped = MathMax(InpMinLot, MathMin(InpMaxLot, raw));
 
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   double minv = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxv = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double minv = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxv = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
 
    clipped = MathMax(minv, MathMin(maxv, clipped));
    clipped = MathFloor(clipped / step) * step;
    return NormalizeDouble(clipped, 2);
 }
 
-int GetSignal(int strat)
+void TrackPosition(ulong ticket, double vol, double riskPips)
+{
+   if(ticket == 0) return;
+   for(int i=0; i<ArraySize(tracks); i++) if(tracks[i].ticket == ticket) return;
+   int n = ArraySize(tracks);
+   ArrayResize(tracks, n + 1);
+   tracks[n].ticket = ticket;
+   tracks[n].initialVolume = vol;
+   tracks[n].riskPips = riskPips;
+   tracks[n].tp1 = tracks[n].tp2 = tracks[n].tp3 = tracks[n].tp4 = false;
+}
+
+int FindTrackIndex(ulong ticket)
+{
+   for(int i=0; i<ArraySize(tracks); i++) if(tracks[i].ticket == ticket) return i;
+   return -1;
+}
+
+void PlaceAgentTrade(int idx, int signal, const string sym)
+{
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   double entry = (signal > 0 ? ask : bid);
+
+   double sl=0.0,tp=0.0,riskPips=0.0;
+   ComputeBotStopsAndTargets(idx, sym, signal, entry, sl, tp, riskPips);
+   double riskDist = MathAbs(entry - sl);
+
+   double lot = ComputeLot(sym, riskDist, agents[idx].riskPct);
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+   trade.SetExpertMagicNumber((long)agents[idx].magic);
+   trade.SetDeviationInPoints(InpSlippagePoints);
+
+   bool ok = (signal > 0)
+             ? trade.Buy(lot, sym, 0.0, NormalizeDouble(sl, digits), NormalizeDouble(tp, digits), "SwarmBuy")
+             : trade.Sell(lot, sym, 0.0, NormalizeDouble(sl, digits), NormalizeDouble(tp, digits), "SwarmSell");
+
+   if(!ok)
+   {
+      Print("Agent ", agents[idx].id, " order failed on ", sym, ": ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      return;
+   }
+
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) == agents[idx].magic && PositionGetString(POSITION_SYMBOL) == sym)
+      {
+         TrackPosition(ticket, PositionGetDouble(POSITION_VOLUME), riskPips);
+         break;
+      }
+   }
+}
+
+void ManagePartialTakeProfits()
+{
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+
+      string sym = PositionGetString(POSITION_SYMBOL);
+      long type = PositionGetInteger(POSITION_TYPE);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double current = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double pip = PipSize(sym);
+      double movePips = (type == POSITION_TYPE_BUY) ? (current - open) / pip : (open - current) / pip;
+
+      int ti = FindTrackIndex(ticket);
+      if(ti < 0)
+      {
+         double sl = PositionGetDouble(POSITION_SL);
+         double riskPips = MathAbs(open - sl) / pip;
+         TrackPosition(ticket, vol, riskPips);
+         ti = FindTrackIndex(ticket);
+         if(ti < 0) continue;
+      }
+
+      double riskPips = MathMax(tracks[ti].riskPips, 1.0);
+      double slice = tracks[ti].initialVolume * 0.20;
+      double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+      slice = MathFloor(slice / step) * step;
+      if(slice < SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN)) slice = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+
+      if(movePips >= riskPips * 1.0 && !tracks[ti].tp1 && vol > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN))
+      { trade.PositionClosePartial(ticket, MathMin(slice, vol)); tracks[ti].tp1 = true; }
+      if(movePips >= riskPips * 2.0 && !tracks[ti].tp2 && PositionGetDouble(POSITION_VOLUME) > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN))
+      { trade.PositionClosePartial(ticket, MathMin(slice, PositionGetDouble(POSITION_VOLUME))); tracks[ti].tp2 = true; }
+      if(movePips >= riskPips * 3.0 && !tracks[ti].tp3 && PositionGetDouble(POSITION_VOLUME) > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN))
+      { trade.PositionClosePartial(ticket, MathMin(slice, PositionGetDouble(POSITION_VOLUME))); tracks[ti].tp3 = true; }
+      if(movePips >= riskPips * 4.0 && !tracks[ti].tp4 && PositionGetDouble(POSITION_VOLUME) > SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN))
+      { trade.PositionClosePartial(ticket, MathMin(slice, PositionGetDouble(POSITION_VOLUME))); tracks[ti].tp4 = true; }
+   }
+}
+
+int GetSignal(int strat, const string sym)
 {
    switch(strat)
    {
-      case STRAT_SMA_CROSS:        return SignalSmaCross();
-      case STRAT_EMA_PULLBACK:     return SignalEmaPullback();
-      case STRAT_RSI_REV:          return SignalRsi();
-      case STRAT_BREAKOUT20:       return SignalBreakout20();
-      case STRAT_ATR_IMPULSE:      return SignalAtrImpulse();
-      case STRAT_MOMENTUM5:        return SignalMomentum5();
-      case STRAT_VWAP_PROXY:       return SignalVwapProxy();
-      case STRAT_DONCHIAN_REVERT:  return SignalDonchianRevert();
-      case STRAT_MACD_HIST:        return SignalMacdHist();
-      case STRAT_TREND_SLOPE:      return SignalTrendSlope();
+      case STRAT_SMA_CROSS:        return SignalSmaCross(sym);
+      case STRAT_EMA_PULLBACK:     return SignalEmaPullback(sym);
+      case STRAT_RSI_REV:          return SignalRsi(sym);
+      case STRAT_BREAKOUT20:       return SignalBreakout20(sym);
+      case STRAT_ATR_IMPULSE:      return SignalAtrImpulse(sym);
+      case STRAT_MOMENTUM5:        return SignalMomentum5(sym);
+      case STRAT_VWAP_PROXY:       return SignalVwapProxy(sym);
+      case STRAT_DONCHIAN_REVERT:  return SignalDonchianRevert(sym);
+      case STRAT_MACD_HIST:        return SignalMacdHist(sym);
+      case STRAT_TREND_SLOPE:      return SignalTrendSlope(sym);
    }
    return 0;
 }
 
-int SignalSmaCross(){ double f=MAValue(MODE_SMA,10,PRICE_CLOSE,0); double s=MAValue(MODE_SMA,30,PRICE_CLOSE,0); return (f>s?1:-1); }
-int SignalEmaPullback(){ double e=MAValue(MODE_EMA,20,PRICE_CLOSE,0); double c=iClose(_Symbol,PERIOD_M5,0); if(c<e*0.998) return 1; if(c>e*1.002) return -1; return 0; }
-int SignalRsi(){ double r=RSIValue(14,0); if(r<30) return 1; if(r>70) return -1; return 0; }
-int SignalBreakout20(){ double hi=-DBL_MAX, lo=DBL_MAX; for(int i=1;i<=20;i++){ hi=MathMax(hi,iHigh(_Symbol,PERIOD_M5,i)); lo=MathMin(lo,iLow(_Symbol,PERIOD_M5,i)); } double c=iClose(_Symbol,PERIOD_M5,0); if(c>hi) return 1; if(c<lo) return -1; return 0; }
-int SignalAtrImpulse(){ double atr=ATRValue(14,0); double d=iClose(_Symbol,PERIOD_M5,0)-iClose(_Symbol,PERIOD_M5,1); if(d>atr*0.35) return 1; if(d<-atr*0.35) return -1; return 0; }
-int SignalMomentum5(){ double p0=iClose(_Symbol,PERIOD_M5,0); double p5=iClose(_Symbol,PERIOD_M5,5); if(p5<=0) return 0; double m=(p0-p5)/p5; if(m>0.001) return 1; if(m<-0.001) return -1; return 0; }
-int SignalVwapProxy(){ double c=iClose(_Symbol,PERIOD_M5,0); double ema=MAValue(MODE_EMA,40,PRICE_TYPICAL,0); if(c>ema) return 1; if(c<ema) return -1; return 0; }
-int SignalDonchianRevert(){ double hi=-DBL_MAX, lo=DBL_MAX; for(int i=1;i<=20;i++){ hi=MathMax(hi,iHigh(_Symbol,PERIOD_M5,i)); lo=MathMin(lo,iLow(_Symbol,PERIOD_M5,i)); } double c=iClose(_Symbol,PERIOD_M5,0); if(c>hi*0.999) return -1; if(c<lo*1.001) return 1; return 0; }
-int SignalMacdHist(){ double m=0.0,s=0.0; MACDValues(m,s); return (m-s>0?1:-1); }
-int SignalTrendSlope(){ double c0=iClose(_Symbol,PERIOD_M5,0); double c30=iClose(_Symbol,PERIOD_M5,30); return (c0>c30?1:-1); }
+int SignalSmaCross(const string sym){ double f=MAValue(sym,MODE_SMA,10,PRICE_CLOSE,0); double s=MAValue(sym,MODE_SMA,30,PRICE_CLOSE,0); return (f>s?1:-1); }
+int SignalEmaPullback(const string sym){ double e=MAValue(sym,MODE_EMA,20,PRICE_CLOSE,0); double c=iClose(sym,PERIOD_M5,0); if(c<e*0.998) return 1; if(c>e*1.002) return -1; return 0; }
+int SignalRsi(const string sym){ double r=RSIValue(sym,14,0); if(r<30) return 1; if(r>70) return -1; return 0; }
+int SignalBreakout20(const string sym){ double hi=-DBL_MAX, lo=DBL_MAX; for(int i=1;i<=20;i++){ hi=MathMax(hi,iHigh(sym,PERIOD_M5,i)); lo=MathMin(lo,iLow(sym,PERIOD_M5,i)); } double c=iClose(sym,PERIOD_M5,0); if(c>hi) return 1; if(c<lo) return -1; return 0; }
+int SignalAtrImpulse(const string sym){ double atr=ATRValue(sym,14,0); double d=iClose(sym,PERIOD_M5,0)-iClose(sym,PERIOD_M5,1); if(d>atr*0.35) return 1; if(d<-atr*0.35) return -1; return 0; }
+int SignalMomentum5(const string sym){ double p0=iClose(sym,PERIOD_M5,0); double p5=iClose(sym,PERIOD_M5,5); if(p5<=0) return 0; double m=(p0-p5)/p5; if(m>0.001) return 1; if(m<-0.001) return -1; return 0; }
+int SignalVwapProxy(const string sym){ double c=iClose(sym,PERIOD_M5,0); double ema=MAValue(sym,MODE_EMA,40,PRICE_TYPICAL,0); if(c>ema) return 1; if(c<ema) return -1; return 0; }
+int SignalDonchianRevert(const string sym){ double hi=-DBL_MAX, lo=DBL_MAX; for(int i=1;i<=20;i++){ hi=MathMax(hi,iHigh(sym,PERIOD_M5,i)); lo=MathMin(lo,iLow(sym,PERIOD_M5,i)); } double c=iClose(sym,PERIOD_M5,0); if(c>hi*0.999) return -1; if(c<lo*1.001) return 1; return 0; }
+int SignalMacdHist(const string sym){ double m=0.0,s=0.0; MACDValues(sym,m,s); return (m-s>0?1:-1); }
+int SignalTrendSlope(const string sym){ double c0=iClose(sym,PERIOD_M5,0); double c30=iClose(sym,PERIOD_M5,30); return (c0>c30?1:-1); }
 
 void RefreshClosedTrades()
 {
    datetime from = TimeCurrent() - 86400 * 14;
    datetime to = TimeCurrent();
-   if(!HistorySelect(from, to))
-      return;
+   if(!HistorySelect(from, to)) return;
 
-   for(int i=0; i<10; i++)
-   {
-      agents[i].trades = 0;
-      agents[i].wins = 0;
-      agents[i].realizedPnl = 0.0;
-   }
+   for(int i=0; i<10; i++) { agents[i].trades = 0; agents[i].wins = 0; agents[i].realizedPnl = 0.0; }
 
    int deals = HistoryDealsTotal();
    for(int i=0; i<deals; i++)
@@ -258,10 +388,8 @@ void RefreshClosedTrades()
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket == 0) continue;
       ulong magic = (ulong)HistoryDealGetInteger(ticket, DEAL_MAGIC);
-      string sym = HistoryDealGetString(ticket, DEAL_SYMBOL);
       long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
-      if(sym != _Symbol || entry != DEAL_ENTRY_OUT)
-         continue;
+      if(entry != DEAL_ENTRY_OUT) continue;
 
       for(int a=0; a<10; a++)
       {
@@ -279,38 +407,40 @@ void RefreshClosedTrades()
 
 void ReplaceUnderperformers()
 {
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    for(int i=0; i<10; i++)
    {
-      if(agents[i].trades < InpEvalTrades)
-         continue;
-      double pf = (balance + agents[i].realizedPnl) / MathMax(balance, 1.0);
+      if(agents[i].trades < InpEvalTrades) continue;
+      double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      double pf = (bal + agents[i].realizedPnl) / MathMax(bal, 1.0);
       if(pf < InpMinProfitFactor)
       {
          int newStrategy = (agents[i].strategy + 3) % 10;
-         Print("Replacing agent ", agents[i].id, " strategy ", agents[i].strategy, " -> ", newStrategy);
          agents[i].strategy = newStrategy;
+         agents[i].riskPct = 0.20 + (0.10 * ((i + newStrategy) % 4)); // regenerate risk profile
+         agents[i].rrTarget = 3.0 + ((i + newStrategy) % 3);
          agents[i].trades = 0;
          agents[i].wins = 0;
          agents[i].realizedPnl = 0;
          agents[i].alive = true;
+         Print("Recycled agent ", agents[i].id, " -> strat ", newStrategy, ", risk% ", DoubleToString(agents[i].riskPct,2), ", RR ", DoubleToString(agents[i].rrTarget,1));
       }
    }
 }
 
 void WriteState()
 {
-   if(fileHandle == INVALID_HANDLE)
-      return;
-
+   if(fileHandle == INVALID_HANDLE) return;
    datetime now = TimeCurrent();
    for(int i=0; i<10; i++)
    {
       double wr = (agents[i].trades > 0 ? (double)agents[i].wins / agents[i].trades : 0.0);
       FileWrite(fileHandle,
                 TimeToString(now, TIME_DATE|TIME_SECONDS),
+                "ALL_FOREX",
                 agents[i].id,
                 agents[i].strategy,
+                DoubleToString(agents[i].riskPct,2),
+                DoubleToString(agents[i].rrTarget,1),
                 (agents[i].alive ? 1 : 0),
                 agents[i].trades,
                 agents[i].wins,
