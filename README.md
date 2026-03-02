@@ -68,3 +68,19 @@ Wire an execution adapter using `MetaTrader5` package for live order placement a
 
 ## Warning
 This software is experimental and high risk. Do not deploy live without extensive backtesting and paper trading.
+
+## MT5 Native EA (MetaQuotes / MQL5)
+A native MT5 Expert Advisor is included at:
+- `mt5/SwarmMasterEA.mq5`
+
+### Install in MT5
+1. Open MT5 → `File` → `Open Data Folder`
+2. Go to `MQL5/Experts/`
+3. Copy `mt5/SwarmMasterEA.mq5` into that folder
+4. In MetaEditor, compile the EA
+5. Attach to a chart (M5 recommended)
+
+### Notes
+- This EA is MT5-native (MQL5), not Python.
+- It runs 10 strategy-agents internally using magic numbers.
+- It writes `swarm_state.csv` (MQL5 Files directory) for external monitoring bridges.
