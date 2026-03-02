@@ -6,6 +6,7 @@ input int      InpMaxPositionsPerAgentPerAsset = 2;   // hard rule
 input double   InpMinLot                        = 0.01;
 input double   InpMaxLot                        = 0.05;
 input int      InpEvalTrades                    = 30;
+input int      InpHistoryLookbackDays           = 14;
 input double   InpMinProfitFactor               = 1.02;
 input int      InpSlippagePoints                = 20;
 input bool     InpWriteDashboardFile            = true;
@@ -26,8 +27,10 @@ input bool     InpUseKellyScaling               = true;     // #5
 input bool     InpUseSniperEntry                = true;     // #6
 input int      InpSniperExpiryBars              = 2;
 input bool     InpUseSessionFilter              = true;     // #7
-input bool     InpUseNewsFilter                 = true;
+input bool     InpUseNewsFilter                 = false;
 input string   InpNewsWindowFile                = "news_windows.csv"; // start_utc,end_utc lines
+input bool     InpTesterSingleSymbolMode        = true;
+input bool     InpTesterRelaxFilters            = true;
 
 // -------------------------------------------------------------------
 enum StrategyType
@@ -70,6 +73,8 @@ struct Agent
    double   realizedPnl;
    double   riskPct;
    double   rrTarget;
+   double   peakPnl;
+   double   maxDrawdown;
    ulong    magic;
 };
 
@@ -97,6 +102,41 @@ double statPnL[10][4][4];
 double statPnLSq[10][4][4];
 
 int AgentIndexByMagic(ulong magic){ for(int i=0;i<10;i++) if(agents[i].magic==magic) return i; return -1; }
+
+
+string RegimeToStr(RegimeType r)
+{
+   if(r==REGIME_TREND) return "TREND";
+   if(r==REGIME_RANGE) return "RANGE";
+   if(r==REGIME_VOLATILE) return "VOLATILE";
+   return "QUIET";
+}
+
+string AssetClassToStr(AssetClassType c)
+{
+   if(c==ASSET_FX) return "FX";
+   if(c==ASSET_METAL) return "METAL";
+   if(c==ASSET_INDEX) return "INDEX";
+   return "STOCK";
+}
+
+void LogSwapEvent(int agentId, int oldStrat, int newStrat, int trades, double winRate, double pnl, double pf, RegimeType r, AssetClassType c)
+{
+   int fh = FileOpen("swarm_swap_log.csv", FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI, ',');
+   if(fh==INVALID_HANDLE) return;
+   if(FileSize(fh)==0)
+      FileWrite(fh,"timestamp","agent_id","old_strategy","new_strategy","trades","win_rate","pnl","profit_factor","regime","asset_class");
+   FileSeek(fh,0,SEEK_END);
+   FileWrite(fh,
+             TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+             agentId, oldStrat, newStrat, trades,
+             DoubleToString(winRate,4),
+             DoubleToString(pnl,2),
+             DoubleToString(pf,4),
+             RegimeToStr(r),
+             AssetClassToStr(c));
+   FileClose(fh);
+}
 
 bool ContainsIgnoreCase(string haystack, string needle)
 {
@@ -155,6 +195,17 @@ AssetClassType AssetClassOf(const string sym)
 void BuildUniverse()
 {
    ArrayResize(universe, 0);
+
+   if(MQLInfoInteger(MQL_TESTER) && InpTesterSingleSymbolMode)
+   {
+      ArrayResize(universe, 1);
+      universe[0] = _Symbol;
+      ArrayResize(lastBarTimes, 1);
+      lastBarTimes[0] = 0;
+      Print("Tester single-symbol mode ON: ", _Symbol);
+      return;
+   }
+
    int total = SymbolsTotal(false);
    for(int i=0;i<total;i++)
    {
@@ -561,10 +612,10 @@ int GetSignal(int strat,const string sym)
 
 void RefreshClosedTrades()
 {
-   datetime from=TimeCurrent()-86400*30, to=TimeCurrent();
+   datetime from=TimeCurrent()-86400*InpHistoryLookbackDays, to=TimeCurrent();
    if(!HistorySelect(from,to)) return;
 
-   for(int i=0;i<10;i++){ agents[i].trades=0; agents[i].wins=0; agents[i].realizedPnl=0.0; }
+   for(int i=0;i<10;i++){ agents[i].trades=0; agents[i].wins=0; agents[i].realizedPnl=0.0; agents[i].peakPnl=0.0; agents[i].maxDrawdown=0.0; }
 
    int deals=HistoryDealsTotal();
    for(int i=0;i<deals;i++)
@@ -581,6 +632,9 @@ void RefreshClosedTrades()
       string sym=HistoryDealGetString(ticket, DEAL_SYMBOL);
       double profit=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_COMMISSION);
       agents[ai].trades++; agents[ai].realizedPnl += profit; if(profit>0) agents[ai].wins++;
+      if(agents[ai].realizedPnl > agents[ai].peakPnl) agents[ai].peakPnl = agents[ai].realizedPnl;
+      double ddNow = agents[ai].peakPnl - agents[ai].realizedPnl;
+      if(ddNow > agents[ai].maxDrawdown) agents[ai].maxDrawdown = ddNow;
 
       // #4 stats by strategy x regime x asset class (regime approximated at close time from current snapshot)
       RegimeType r = ClassifyRegime(sym);
@@ -604,11 +658,17 @@ void ReplaceUnderperformers()
          string focus = (ArraySize(universe)>0 ? universe[(i + (int)TimeCurrent()) % ArraySize(universe)] : "EURUSD");
          RegimeType r = ClassifyRegime(focus);
          AssetClassType c = AssetClassOf(focus);
+
+         int oldStrat = agents[i].strategy;
+         double wr = (agents[i].trades>0 ? (double)agents[i].wins/agents[i].trades : 0.0);
          ReassignAgentSmart(i, r, c);
+         int newStrat = agents[i].strategy;
+
+         LogSwapEvent(agents[i].id, oldStrat, newStrat, agents[i].trades, wr, agents[i].realizedPnl, pf, r, c);
 
          agents[i].riskPct = 0.20 + (0.10 * ((i + agents[i].strategy) % 4));
          agents[i].rrTarget = 3.0 + ((i + agents[i].strategy) % 3);
-         agents[i].trades=0; agents[i].wins=0; agents[i].realizedPnl=0.0; agents[i].alive=true;
+         agents[i].trades=0; agents[i].wins=0; agents[i].realizedPnl=0.0; agents[i].peakPnl=0.0; agents[i].maxDrawdown=0.0; agents[i].alive=true;
       }
    }
 }
@@ -636,7 +696,8 @@ void WriteState()
                 DoubleToString(wr,4),
                 DoubleToString(agents[i].realizedPnl,2),
                 DoubleToString(avgPnL,2),
-                DoubleToString(recovery,2));
+                DoubleToString(recovery,2),
+                DoubleToString(agents[i].maxDrawdown,2));
    }
    FileFlush(fileHandle);
 }
@@ -690,6 +751,8 @@ int OnInit()
       agents[i].trades=0; agents[i].wins=0; agents[i].realizedPnl=0.0;
       agents[i].riskPct=0.20 + (0.10*(i%4));
       agents[i].rrTarget=3.0 + (i%3);
+      agents[i].peakPnl=0.0;
+      agents[i].maxDrawdown=0.0;
       agents[i].magic=990000+i+1;
    }
 
@@ -709,7 +772,7 @@ int OnInit()
       fileHandle=FileOpen(InpDashboardFile,FILE_WRITE|FILE_CSV|FILE_ANSI,',');
       if(fileHandle!=INVALID_HANDLE)
       {
-         FileWrite(fileHandle,"timestamp","symbol","agent_id","strategy","risk_pct","rr","alive","trades","wins","win_rate","realized_pnl","avg_pnl","recovery_factor");
+         FileWrite(fileHandle,"timestamp","symbol","agent_id","strategy","risk_pct","rr","alive","trades","wins","win_rate","realized_pnl","avg_pnl","recovery_factor","agent_max_dd");
          FileFlush(fileHandle);
       }
    }
@@ -723,7 +786,7 @@ void OnTick()
    ManagePartialTakeProfits();
    RefreshClosedTrades();
 
-   if(InNewsBlackout())
+   if(InpUseNewsFilter && !MQLInfoInteger(MQL_TESTER) && InNewsBlackout())
    {
       WriteState();
       WriteOpenPositionsSnapshot();
@@ -737,7 +800,8 @@ void OnTick()
       if(bar==0 || bar==lastBarTimes[s]) continue;
       lastBarTimes[s]=bar;
 
-      if(!IsSessionAllowed(sym)) continue;
+      bool relax = (MQLInfoInteger(MQL_TESTER) && InpTesterRelaxFilters);
+      if(!relax && !IsSessionAllowed(sym)) continue;
 
       RegimeType r = ClassifyRegime(sym);
 
@@ -746,12 +810,12 @@ void OnTick()
          if(!agents[i].alive) continue;
          if(PositionsByAgentAndSymbol(agents[i].magic,sym) >= InpMaxPositionsPerAgentPerAsset) continue;
 
-         if(InpUseRegimeFilter && !StrategyAllowedInRegime(agents[i].strategy, r)) continue;
+         if(!relax && InpUseRegimeFilter && !StrategyAllowedInRegime(agents[i].strategy, r)) continue;
 
          int signal=GetSignal(agents[i].strategy,sym);
          if(signal==0) continue;
 
-         if(!MTFTrendAgrees(sym, signal)) continue;
+         if(!relax && !MTFTrendAgrees(sym, signal)) continue;
 
          PlaceAgentTrade(i,signal,sym);
       }
@@ -806,11 +870,12 @@ double ComputeTesterSharpeProxy()
 
 double OnTester()
 {
-   double initBal = TesterStatistics(STAT_INITIAL_DEPOSIT);
    double net = TesterStatistics(STAT_PROFIT);
    double grossProfit = TesterStatistics(STAT_GROSS_PROFIT);
    double grossLossAbs = MathAbs(TesterStatistics(STAT_GROSS_LOSS));
    double maxDdAbs = MathAbs(TesterStatistics(STAT_BALANCE_DD));
+   double maxDdPct = MathAbs(TesterStatistics(STAT_BALANCE_DDREL_PERCENT));
+   double totalTrades = TesterStatistics(STAT_TRADES);
 
    double pf = (grossLossAbs>0.0 ? grossProfit/grossLossAbs : 0.0);
    double recovery = (maxDdAbs>0.0 ? net/maxDdAbs : 0.0);
@@ -824,8 +889,10 @@ double OnTester()
    g_testerPF = pf;
    g_testerSharpeProxy = sharpe;
 
-   // Composite fitness: prioritize risk-adjusted returns
-   double fitness = (sharpe*3.0) + (pf*2.0) + (recovery*2.0) + (net/MathMax(initBal,1.0));
+   // Custom optimization criterion: Sharpe * sqrt(trades) * (1 - maxDD%)
+   double drawdownPenalty = 1.0 - (maxDdPct/100.0);
+   if(drawdownPenalty < 0.0) drawdownPenalty = 0.0;
+   double fitness = sharpe * MathSqrt(MathMax(totalTrades,1.0)) * drawdownPenalty;
    return fitness;
 }
 
