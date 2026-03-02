@@ -136,3 +136,13 @@ The MT5 EA now includes:
 Place `news_windows.csv` in MT5 Files directory. Each row:
 `YYYY.MM.DD HH:MM,YYYY.MM.DD HH:MM`
 (UTC start, UTC end)
+
+
+## Backtest pack
+Added `backtest_pack/` with:
+- presets for 7m / 12m / 24m (`.set` files)
+- report parser (`backtest_pack/collect_results.py`)
+- run ranking (`backtest_pack/scoreboard.py`)
+- usage guide (`backtest_pack/README.md`)
+
+This is intended to validate strategy robustness before live deployment.

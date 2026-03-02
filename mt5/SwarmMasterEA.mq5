@@ -98,7 +98,14 @@ double statPnLSq[10][4][4];
 
 int AgentIndexByMagic(ulong magic){ for(int i=0;i<10;i++) if(agents[i].magic==magic) return i; return -1; }
 
-bool ContainsIgnoreCase(string haystack, string needle){ return (StringFind(StringToUpper(haystack), StringToUpper(needle)) >= 0); }
+bool ContainsIgnoreCase(string haystack, string needle)
+{
+   string hs = haystack;
+   string nd = needle;
+   StringToUpper(hs);
+   StringToUpper(nd);
+   return (StringFind(hs, nd) >= 0);
+}
 
 double PipSize(const string sym)
 {
@@ -177,7 +184,7 @@ int PositionsByAgentAndSymbol(ulong magic, const string sym)
 }
 
 double GetBufferValue(int handle,int buffer,int shift){ if(handle==INVALID_HANDLE) return 0.0; double data[]; ArraySetAsSeries(data,true); if(CopyBuffer(handle,buffer,shift,1,data)<=0) return 0.0; return data[0]; }
-double MAValue(const string sym, ENUM_TIMEFRAMES tf, ENUM_MA_METHOD m, int period, ENUM_APPLIED_PRICE p, int shift){ int h=iMA(sym,tf,period,0,m,p); double v=GetBufferValue(h,0,shift); IndicatorRelease(h); return v; }
+double MAValue(const string sym, ENUM_TIMEFRAMES tf, ENUM_MA_METHOD maMethod, int maPeriod, ENUM_APPLIED_PRICE apPrice, int shift){ int h=iMA(sym,tf,maPeriod,0,maMethod,apPrice); double v=GetBufferValue(h,0,shift); IndicatorRelease(h); return v; }
 double RSIValue(const string sym,int period,int shift){ int h=iRSI(sym,PERIOD_M5,period,PRICE_CLOSE); double v=GetBufferValue(h,0,shift); IndicatorRelease(h); return v; }
 double ATRValue(const string sym,int period,int shift){ int h=iATR(sym,PERIOD_M5,period); double v=GetBufferValue(h,0,shift); IndicatorRelease(h); return v; }
 double ADXValue(const string sym,int period,int shift){ int h=iADX(sym,PERIOD_M5,period); double v=GetBufferValue(h,0,shift); IndicatorRelease(h); return v; }
@@ -187,7 +194,7 @@ double BollWidth(const string sym)
 {
    int h=iBands(sym,PERIOD_M5,InpBbPeriod,0,2.0,PRICE_CLOSE);
    if(h==INVALID_HANDLE) return 0.0;
-   double up=GetBufferValue(h,0,0), lo=GetBufferValue(h,2,0), mid=GetBufferValue(h,1,0);
+   double mid=GetBufferValue(h,0,0), up=GetBufferValue(h,1,0), lo=GetBufferValue(h,2,0);
    IndicatorRelease(h);
    if(mid==0) return 0.0;
    return (up-lo)/mid;
@@ -241,9 +248,9 @@ bool MTFTrendAgrees(const string sym, int direction)
 bool IsSessionAllowed(const string sym)
 {
    if(!InpUseSessionFilter) return true;
-   MqlDateTime gmt;
-   TimeToStruct(TimeGMT(), gmt);
-   int h = gmt.hour;
+   MqlDateTime dt;
+   TimeToStruct(TimeGMT(), dt);
+   int h = dt.hour;
    AssetClassType c = AssetClassOf(sym);
    if(c==ASSET_FX) return (h>=6 && h<=20);      // London + NY overlap focus
    if(c==ASSET_METAL) return (h>=7 && h<=21);

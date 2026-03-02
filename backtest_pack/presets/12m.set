@@ -1,0 +1,17 @@
+; MT5 Strategy Tester preset (12 months)
+InpMaxPositionsPerAgentPerAsset=2
+InpMinLot=0.01
+InpMaxLot=0.05
+InpEvalTrades=30
+InpMinProfitFactor=1.02
+InpUseMTFConfirm=true
+InpUseRegimeFilter=true
+InpUsePortfolioRiskManager=true
+InpDirectionRiskCapPct=55.0
+InpPortfolioRiskBudgetPct=4.0
+InpUseKellyScaling=true
+InpUseSniperEntry=true
+InpSniperExpiryBars=2
+InpUseSessionFilter=true
+InpUseNewsFilter=false
+; date range should be set in tester UI: last 12 months
