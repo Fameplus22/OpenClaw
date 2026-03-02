@@ -10,6 +10,7 @@ input double   InpMinProfitFactor               = 1.02;
 input int      InpSlippagePoints                = 20;
 input bool     InpWriteDashboardFile            = true;
 input string   InpDashboardFile                 = "swarm_state.csv";
+input string   InpOpenPositionsFile             = "swarm_open_positions.csv";
 
 enum StrategyType
 {
@@ -33,8 +34,8 @@ struct Agent
    int      trades;
    int      wins;
    double   realizedPnl;
-   double   riskPct;          // each bot's own risk model
-   double   rrTarget;         // each bot's own reward model
+   double   riskPct;
+   double   rrTarget;
    ulong    magic;
 };
 
@@ -42,7 +43,7 @@ struct PositionTrack
 {
    ulong  ticket;
    double initialVolume;
-   double riskPips;           // ticket-specific risk from its own SL
+   double riskPips;
    bool   tp1;
    bool   tp2;
    bool   tp3;
@@ -55,6 +56,12 @@ PositionTrack tracks[];
 string forexSymbols[];
 datetime lastBarTimes[];
 int fileHandle = INVALID_HANDLE;
+
+int AgentIndexByMagic(ulong magic)
+{
+   for(int i=0; i<10; i++) if(agents[i].magic == magic) return i;
+   return -1;
+}
 
 double PipSize(const string sym)
 {
@@ -155,8 +162,8 @@ int OnInit()
       agents[i].trades = 0;
       agents[i].wins = 0;
       agents[i].realizedPnl = 0.0;
-      agents[i].riskPct = 0.20 + (0.10 * (i % 4)); // 0.2%, 0.3%, 0.4%, 0.5%
-      agents[i].rrTarget = 3.0 + (i % 3);          // 3R..5R
+      agents[i].riskPct = 0.20 + (0.10 * (i % 4));
+      agents[i].rrTarget = 3.0 + (i % 3);
       agents[i].magic = 990000 + i + 1;
    }
 
@@ -194,7 +201,7 @@ void OnTick()
       for(int i=0; i<10; i++)
       {
          if(!agents[i].alive) continue;
-         if(PositionsByAgentAndSymbol(agents[i].magic, sym) >= InpMaxPositionsPerAgentPerAsset) continue; // hard rule
+         if(PositionsByAgentAndSymbol(agents[i].magic, sym) >= InpMaxPositionsPerAgentPerAsset) continue;
 
          int signal = GetSignal(agents[i].strategy, sym);
          if(signal != 0) PlaceAgentTrade(i, signal, sym);
@@ -203,17 +210,17 @@ void OnTick()
 
    ReplaceUnderperformers();
    WriteState();
+   WriteOpenPositionsSnapshot();
 }
 
 void ComputeBotStopsAndTargets(int idx, const string sym, int signal, double entry, double &sl, double &tp, double &riskPips)
 {
-   // each bot builds its own stop from volatility + strategy profile
    double atr = ATRValue(sym, 14, 0);
    double pip = PipSize(sym);
    if(pip <= 0) pip = SymbolInfoDouble(sym, SYMBOL_POINT);
 
-   double stratMult = 1.2 + (agents[idx].strategy % 4) * 0.4; // strategy-specific stop behavior
-   double riskDist = MathMax(atr * stratMult, 8.0 * pip);     // never too tiny
+   double stratMult = 1.2 + (agents[idx].strategy % 4) * 0.4;
+   double riskDist = MathMax(atr * stratMult, 8.0 * pip);
    riskPips = riskDist / pip;
 
    double tpDist = riskDist * agents[idx].rrTarget;
@@ -226,11 +233,9 @@ double ComputeLot(const string sym, double riskDistPrice, double riskPct)
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskCash = balance * (riskPct / 100.0);
 
-   // approximate cash loss per 1 lot at riskDistPrice
    double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   if(tickSize <= 0 || tickValue <= 0)
-      return InpMinLot;
+   if(tickSize <= 0 || tickValue <= 0) return InpMinLot;
 
    double lossPerLot = (riskDistPrice / tickSize) * tickValue;
    if(lossPerLot <= 0) return InpMinLot;
@@ -416,7 +421,7 @@ void ReplaceUnderperformers()
       {
          int newStrategy = (agents[i].strategy + 3) % 10;
          agents[i].strategy = newStrategy;
-         agents[i].riskPct = 0.20 + (0.10 * ((i + newStrategy) % 4)); // regenerate risk profile
+         agents[i].riskPct = 0.20 + (0.10 * ((i + newStrategy) % 4));
          agents[i].rrTarget = 3.0 + ((i + newStrategy) % 3);
          agents[i].trades = 0;
          agents[i].wins = 0;
@@ -448,4 +453,52 @@ void WriteState()
                 DoubleToString(agents[i].realizedPnl, 2));
    }
    FileFlush(fileHandle);
+}
+
+void WriteOpenPositionsSnapshot()
+{
+   int fh = FileOpen(InpOpenPositionsFile, FILE_WRITE|FILE_CSV|FILE_ANSI, ',');
+   if(fh == INVALID_HANDLE) return;
+
+   FileWrite(fh, "timestamp", "ticket", "symbol", "agent_id", "strategy", "side", "volume", "open_price", "current_price", "sl", "tp", "pnl", "swap", "magic");
+   datetime now = TimeCurrent();
+
+   for(int i=PositionsTotal()-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+
+      string sym = PositionGetString(POSITION_SYMBOL);
+      long type = PositionGetInteger(POSITION_TYPE);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double current = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double pnl = PositionGetDouble(POSITION_PROFIT);
+      double swap = PositionGetDouble(POSITION_SWAP);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      ulong magic = (ulong)PositionGetInteger(POSITION_MAGIC);
+      int aidx = AgentIndexByMagic(magic);
+      int aid = (aidx >= 0 ? agents[aidx].id : -1);
+      int strat = (aidx >= 0 ? agents[aidx].strategy : -1);
+      string side = (type == POSITION_TYPE_BUY ? "BUY" : "SELL");
+
+      FileWrite(fh,
+                TimeToString(now, TIME_DATE|TIME_SECONDS),
+                (string)ticket,
+                sym,
+                aid,
+                strat,
+                side,
+                DoubleToString(vol, 2),
+                DoubleToString(open, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS)),
+                DoubleToString(current, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS)),
+                DoubleToString(sl, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS)),
+                DoubleToString(tp, (int)SymbolInfoInteger(sym, SYMBOL_DIGITS)),
+                DoubleToString(pnl, 2),
+                DoubleToString(swap, 2),
+                (string)magic);
+   }
+
+   FileClose(fh);
 }

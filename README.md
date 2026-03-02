@@ -98,3 +98,11 @@ A native MT5 Expert Advisor is included at:
 - Each bot has its own risk profile (`riskPct`) and reward target (`rrTarget`).
 - Each bot keeps its own strategy logic and can be recycled to a new profile when underperforming.
 - **Hard constraint enforced:** max `2` open positions per bot per asset (`InpMaxPositionsPerAgentPerAsset`).
+
+
+### Enhanced live dashboard
+- `dashboard.py` now includes:
+  - **Agent Performance** tab (P&L, win-rate, assets traded, per-agent charts)
+  - **Open Positions** tab (live position blotter with symbol, side, volume, P&L, SL/TP)
+  - **All Prompts** tab (cross-channel prompt history)
+- MT5 EA now exports open positions snapshot to `swarm_open_positions.csv`.
