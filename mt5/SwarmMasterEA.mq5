@@ -71,31 +71,88 @@ double PipSize(const string sym)
    return point;
 }
 
-bool IsForexSymbol(const string sym)
+bool ContainsIgnoreCase(string haystack, string needle)
+{
+   return (StringFind(StringToUpper(haystack), StringToUpper(needle)) >= 0);
+}
+
+bool IsTradableSymbol(const string sym)
+{
+   long mode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(mode == SYMBOL_TRADE_MODE_DISABLED) return false;
+   return SymbolSelect(sym, true);
+}
+
+bool IsTop30Forex(const string sym)
 {
    string base = SymbolInfoString(sym, SYMBOL_CURRENCY_BASE);
    string profit = SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
-   long mode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
-   if(mode == SYMBOL_TRADE_MODE_DISABLED) return false;
-   return (StringLen(base) == 3 && StringLen(profit) == 3);
+   if(StringLen(base) != 3 || StringLen(profit) != 3) return false;
+
+   string pair = base + profit;
+   string top30[] = {
+      "EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD",
+      "EURGBP","EURJPY","EURCHF","EURAUD","EURCAD","EURNZD",
+      "GBPJPY","GBPCHF","GBPAUD","GBPCAD","GBPNZD",
+      "AUDJPY","AUDCHF","AUDCAD","AUDNZD",
+      "NZDJPY","NZDCHF","NZDCAD",
+      "CADJPY","CADCHF","CHFJPY",
+      "USDSEK","USDNOK"
+   };
+
+   for(int i=0; i<ArraySize(top30); i++)
+      if(pair == top30[i]) return true;
+   return false;
+}
+
+bool IsGoldSymbol(const string sym)
+{
+   return ContainsIgnoreCase(sym, "XAU") || ContainsIgnoreCase(sym, "GOLD");
+}
+
+bool IsSilverSymbol(const string sym)
+{
+   return ContainsIgnoreCase(sym, "XAG") || ContainsIgnoreCase(sym, "SILVER");
+}
+
+bool IsTargetIndex(const string sym)
+{
+   return ContainsIgnoreCase(sym, "NAS") || ContainsIgnoreCase(sym, "USTEC") || ContainsIgnoreCase(sym, "US100") ||
+          ContainsIgnoreCase(sym, "US30") || ContainsIgnoreCase(sym, "DJI") ||
+          ContainsIgnoreCase(sym, "GER30") || ContainsIgnoreCase(sym, "DE30") || ContainsIgnoreCase(sym, "DAX");
+}
+
+bool IsFastStock(const string sym)
+{
+   string tickers[] = {"NVDA","TSLA","AAPL","META","AMZN","MSFT","AMD","NFLX"};
+   for(int i=0; i<ArraySize(tickers); i++)
+      if(ContainsIgnoreCase(sym, tickers[i])) return true;
+   return false;
 }
 
 void BuildForexUniverse()
 {
    ArrayResize(forexSymbols, 0);
    int total = SymbolsTotal(false);
+
    for(int i=0; i<total; i++)
    {
       string sym = SymbolName(i, false);
-      if(sym == "" || !IsForexSymbol(sym)) continue;
-      SymbolSelect(sym, true);
+      if(sym == "") continue;
+      if(!IsTradableSymbol(sym)) continue;
+
+      bool keep = IsTop30Forex(sym) || IsGoldSymbol(sym) || IsSilverSymbol(sym) || IsTargetIndex(sym) || IsFastStock(sym);
+      if(!keep) continue;
+
       int n = ArraySize(forexSymbols);
       ArrayResize(forexSymbols, n + 1);
       forexSymbols[n] = sym;
    }
+
    ArrayResize(lastBarTimes, ArraySize(forexSymbols));
    for(int j=0; j<ArraySize(lastBarTimes); j++) lastBarTimes[j] = 0;
-   Print("Forex universe loaded: ", ArraySize(forexSymbols), " symbols");
+
+   Print("Target universe loaded: ", ArraySize(forexSymbols), " symbols (Top30 FX + Gold/Silver + indices + fast stocks)");
 }
 
 int PositionsByAgentAndSymbol(ulong magic, const string sym)
@@ -441,7 +498,7 @@ void WriteState()
       double wr = (agents[i].trades > 0 ? (double)agents[i].wins / agents[i].trades : 0.0);
       FileWrite(fileHandle,
                 TimeToString(now, TIME_DATE|TIME_SECONDS),
-                "ALL_FOREX",
+                "TARGET_UNIVERSE",
                 agents[i].id,
                 agents[i].strategy,
                 DoubleToString(agents[i].riskPct,2),

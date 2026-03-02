@@ -106,3 +106,14 @@ A native MT5 Expert Advisor is included at:
   - **Open Positions** tab (live position blotter with symbol, side, volume, P&L, SL/TP)
   - **All Prompts** tab (cross-channel prompt history)
 - MT5 EA now exports open positions snapshot to `swarm_open_positions.csv`.
+
+
+### Universe filtering (noise reduction)
+The EA now only scans tradable broker symbols in this target set:
+- Top 30 forex pairs
+- Gold (XAU/*GOLD*)
+- Silver (XAG/*SILVER*)
+- NASDAQ, US30, German 30 aliases (e.g., USTEC/US100/NAS*, US30/DJI, GER30/DE30/DAX)
+- A small fast-stock list (NVDA, TSLA, AAPL, META, AMZN, MSFT, AMD, NFLX)
+
+This removes invalid/non-carried assets from execution attempts and cleans up logs.
