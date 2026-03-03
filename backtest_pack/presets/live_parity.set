@@ -1,0 +1,47 @@
+; LIVE_PARITY preset
+; Goal: backtest conditions match intended live behavior as closely as possible.
+
+; --- Core risk guards ---
+InpMaxPositionsPerAgentPerAsset=2
+InpMaxTotalOpenPositions=3
+InpMinFreeMarginLevelPct=500.0
+InpMaxDailyLossPct=2.0
+InpMinLot=0.01
+InpMaxLot=0.05
+
+; --- Evaluation / recycle controls ---
+InpEvalTrades=30
+InpHistoryLookbackDays=14
+InpMinProfitFactor=1.02
+
+; --- Strategy filters (keep same as live) ---
+InpUseMTFConfirm=true
+InpH1EmaPeriod=50
+InpUseRegimeFilter=true
+InpAdxPeriod=14
+InpBbPeriod=20
+InpAdxTrendThresh=22.0
+InpUsePortfolioRiskManager=true
+InpDirectionRiskCapPct=60.0
+InpPortfolioRiskBudgetPct=4.0
+InpUseKellyScaling=true
+InpUseSniperEntry=true
+InpSniperExpiryBars=2
+InpUseSessionFilter=true
+InpUseNewsFilter=false
+
+; --- Critical parity toggles: NO tester shortcuts ---
+InpTesterSingleSymbolMode=false
+InpTesterRelaxFilters=false
+
+; --- Output/log files ---
+InpWriteDashboardFile=true
+InpDashboardFile=swarm_state.csv
+InpOpenPositionsFile=swarm_open_positions.csv
+
+; --- Notes ---
+; In MT5 Strategy Tester also set manually:
+; - Model: Every tick based on real ticks
+; - Spread: Current/realistic
+; - Timeframe: same as live chart usage
+; - Date window: 7m / 12m / 24m validation passes
