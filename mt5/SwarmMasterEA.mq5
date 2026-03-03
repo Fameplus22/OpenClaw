@@ -3,6 +3,9 @@
 
 // ========================== Core Controls ==========================
 input int      InpMaxPositionsPerAgentPerAsset = 2;   // hard rule
+input int      InpMaxTotalOpenPositions         = 3;
+input double   InpMinFreeMarginLevelPct         = 500.0;
+input double   InpMaxDailyLossPct               = 2.0;
 input double   InpMinLot                        = 0.01;
 input double   InpMaxLot                        = 0.05;
 input int      InpEvalTrades                    = 30;
@@ -95,6 +98,49 @@ PositionTrack tracks[];
 string universe[];
 datetime lastBarTimes[];
 int fileHandle = INVALID_HANDLE;
+double g_dayStartBalance = 0.0;
+int g_dayOfYear = -1;
+
+int TotalOpenByMagic()
+{
+   int c=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0 || !PositionSelectByTicket(t)) continue;
+      ulong mg=(ulong)PositionGetInteger(POSITION_MAGIC);
+      if(mg>=990001 && mg<=990010) c++;
+   }
+   return c;
+}
+
+void RefreshDailyGuard()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   if(dt.day_of_year!=g_dayOfYear)
+   {
+      g_dayOfYear=dt.day_of_year;
+      g_dayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE);
+   }
+}
+
+bool CapitalGuardAllowsNewTrade()
+{
+   RefreshDailyGuard();
+
+   if(TotalOpenByMagic() >= InpMaxTotalOpenPositions) return false;
+
+   double ml = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
+   if(ml>0 && ml < InpMinFreeMarginLevelPct) return false;
+
+   if(g_dayStartBalance>0)
+   {
+      double ddPct = (g_dayStartBalance-AccountInfoDouble(ACCOUNT_EQUITY))/g_dayStartBalance*100.0;
+      if(ddPct >= InpMaxDailyLossPct) return false;
+   }
+   return true;
+}
 
 // Learning table: strategy x regime x assetclass
 int    statN[10][4][4];
@@ -776,6 +822,7 @@ int OnInit()
          FileFlush(fileHandle);
       }
    }
+   RefreshDailyGuard();
    return(INIT_SUCCEEDED);
 }
 

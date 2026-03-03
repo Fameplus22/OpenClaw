@@ -20,10 +20,15 @@ input double InpRRCap = 8.0;
 input double InpRiskPct = 0.5;
 input double InpBeTrigger = 0.50;
 input int InpMaxOpenPerSymbol = 2;
+input int InpMaxTotalOpenPositions = 3;
+input double InpMinMarginLevelPct = 500.0;
+input double InpMaxDailyLossPct = 2.0;
 input long InpMagic = 881500;
 
 string syms[];
 datetime lastBar[];
+double gDayStartBalance=0.0;
+int gDay=-1;
 
 bool ContainsIC(string a, string b){ string x=a,y=b; StringToUpper(x); StringToUpper(y); return StringFind(x,y)>=0; }
 double PipSize(const string s){ int d=(int)SymbolInfoInteger(s,SYMBOL_DIGITS); double p=SymbolInfoDouble(s,SYMBOL_POINT); return (d==3||d==5)?p*10.0:p; }
@@ -48,6 +53,17 @@ bool BearFVG(string s){ double h1=iHigh(s,InpLTF,1), l3=iLow(s,InpLTF,3); double
 
 int OpenCountSym(string s){ int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if(PositionGetString(POSITION_SYMBOL)==s && (long)PositionGetInteger(POSITION_MAGIC)==InpMagic) c++; } return c; }
 
+int OpenCountTotal(){ int c=0; for(int i=PositionsTotal()-1;i>=0;i--){ ulong t=PositionGetTicket(i); if(t==0||!PositionSelectByTicket(t)) continue; if((long)PositionGetInteger(POSITION_MAGIC)==InpMagic) c++; } return c; }
+void RefreshDay(){ MqlDateTime dt; TimeToStruct(TimeCurrent(),dt); if(dt.day_of_year!=gDay){ gDay=dt.day_of_year; gDayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE);} }
+bool CapitalGuard(){
+   RefreshDay();
+   if(OpenCountTotal()>=InpMaxTotalOpenPositions) return false;
+   double ml=AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
+   if(ml>0 && ml<InpMinMarginLevelPct) return false;
+   if(gDayStartBalance>0){ double dd=(gDayStartBalance-AccountInfoDouble(ACCOUNT_EQUITY))/gDayStartBalance*100.0; if(dd>=InpMaxDailyLossPct) return false; }
+   return true;
+}
+
 double LotByRisk(string s,double riskDist)
 {
    double bal=AccountInfoDouble(ACCOUNT_BALANCE), cash=bal*(InpRiskPct/100.0);
@@ -63,6 +79,7 @@ double LotByRisk(string s,double riskDist)
 
 void TryTrade(string s)
 {
+   if(!CapitalGuard()) return;
    if(OpenCountSym(s)>=InpMaxOpenPerSymbol) return;
    int bias=BiasHTF(s);
    if(bias==0) return;
@@ -111,6 +128,7 @@ int OnInit()
    }
    ArrayResize(lastBar,ArraySize(syms));
    for(int i=0;i<ArraySize(lastBar);i++) lastBar[i]=0;
+   RefreshDay();
    return INIT_SUCCEEDED;
 }
 
