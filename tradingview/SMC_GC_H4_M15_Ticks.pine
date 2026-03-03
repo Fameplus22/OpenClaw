@@ -1,0 +1,111 @@
+//@version=5
+strategy("SMC GC1! H4->M15 (Ticks)", overlay=true, pyramiding=0)
+
+htfTf = input.timeframe("240", "HTF")
+emaLen = input.int(50)
+swingLHTF = input.int(5)
+swingRHTF = input.int(5)
+swingLLTF = input.int(3)
+swingRLTF = input.int(3)
+
+fvgHTF = input.float(0.15)
+fvgLTF = input.float(0.10)
+sweepTolTicks = input.int(2)
+
+stopMinTicks = input.int(20)
+stopMaxTicks = input.int(50)
+fallbackStopTicks = input.int(30)
+rrFloor = input.float(3.0)
+rrPref = input.float(5.0)
+rrCap = input.float(8.0)
+beTrigger = input.float(0.50)
+
+sessionLondon = input.session("0200-1100")
+sessionNY = input.session("1300-1700")
+
+htfClose = request.security(syminfo.tickerid, htfTf, close, lookahead=barmerge.lookahead_off)
+htfEma = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaLen), lookahead=barmerge.lookahead_off)
+htfEma3 = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaLen)[3], lookahead=barmerge.lookahead_off)
+
+htfPh = request.security(syminfo.tickerid, htfTf, ta.pivothigh(high, swingLHTF, swingRHTF), lookahead=barmerge.lookahead_off)
+htfPl = request.security(syminfo.tickerid, htfTf, ta.pivotlow(low, swingLHTF, swingRHTF), lookahead=barmerge.lookahead_off)
+lastHTFHigh = ta.valuewhen(not na(htfPh), htfPh, 0)
+lastHTFLow = ta.valuewhen(not na(htfPl), htfPl, 0)
+
+bosUp = not na(lastHTFHigh) and htfClose > lastHTFHigh
+bosDn = not na(lastHTFLow) and htfClose < lastHTFLow
+biasUp = htfEma > htfEma3 and bosUp
+biasDn = htfEma < htfEma3 and bosDn
+
+ema50 = ta.ema(close, emaLen)
+atr = ta.atr(14)
+vwapS = ta.vwap(hlc3)
+
+ph = ta.pivothigh(high, swingLLTF, swingRLTF)
+pl = ta.pivotlow(low, swingLLTF, swingRLTF)
+prevHigh = ta.valuewhen(not na(ph), ph, 0)
+prevLow = ta.valuewhen(not na(pl), pl, 0)
+
+tol = math.max(sweepTolTicks * syminfo.mintick, 0.05 * atr)
+sweepLow = not na(prevLow) and low <= (prevLow - tol) and close > prevLow
+sweepHigh = not na(prevHigh) and high >= (prevHigh + tol) and close < prevHigh
+
+bullFVG = low[1] > high[3] and (low[1] - high[3]) >= (fvgLTF * atr)
+bearFVG = low[3] > high[1] and (low[3] - high[1]) >= (fvgLTF * atr)
+
+inLondon = not na(time(timeframe.period, sessionLondon))
+inNY = not na(time(timeframe.period, sessionNY))
+sessionOK = inLondon or inNY
+
+longSignal = barstate.isconfirmed and biasUp and sweepLow and bullFVG and close >= ema50 and close >= vwapS and sessionOK
+shortSignal = barstate.isconfirmed and biasDn and sweepHigh and bearFVG and close <= ema50 and close <= vwapS and sessionOK
+
+var float longSL = na
+var float longTP = na
+var float shortSL = na
+var float shortTP = na
+
+rr = math.max(rrFloor, math.min(rrPref, rrCap))
+
+if longSignal and strategy.position_size <= 0
+    riskTicksLong = int(math.round((close - nz(prevLow, close - fallbackStopTicks*syminfo.mintick)) / syminfo.mintick))
+    riskTicksLong := math.max(stopMinTicks, riskTicksLong)
+    if riskTicksLong <= stopMaxTicks
+        longSL := close - riskTicksLong * syminfo.mintick
+        longTP := close + (riskTicksLong * rr) * syminfo.mintick
+        strategy.entry("L", strategy.long)
+
+if shortSignal and strategy.position_size >= 0
+    riskTicksShort = int(math.round((nz(prevHigh, close + fallbackStopTicks*syminfo.mintick) - close) / syminfo.mintick))
+    riskTicksShort := math.max(stopMinTicks, riskTicksShort)
+    if riskTicksShort <= stopMaxTicks
+        shortSL := close + riskTicksShort * syminfo.mintick
+        shortTP := close - (riskTicksShort * rr) * syminfo.mintick
+        strategy.entry("S", strategy.short)
+
+if strategy.position_size > 0 and not na(longSL) and not na(longTP)
+    avg = strategy.position_avg_price
+    risk = math.abs(avg - longSL)
+    tpDist = math.abs(longTP - avg)
+    moveDist = math.abs(close - avg)
+    beSL = moveDist >= tpDist * beTrigger ? avg : longSL
+    strategy.exit("L-1R", "L", limit=avg + 1.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("L-2R", "L", limit=avg + 2.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("L-3R", "L", limit=avg + 3.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("L-4R", "L", limit=avg + 4.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("L-TP", "L", limit=longTP, stop=beSL)
+
+if strategy.position_size < 0 and not na(shortSL) and not na(shortTP)
+    avg = strategy.position_avg_price
+    risk = math.abs(shortSL - avg)
+    tpDist = math.abs(avg - shortTP)
+    moveDist = math.abs(avg - close)
+    beSL = moveDist >= tpDist * beTrigger ? avg : shortSL
+    strategy.exit("S-1R", "S", limit=avg - 1.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("S-2R", "S", limit=avg - 2.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("S-3R", "S", limit=avg - 3.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("S-4R", "S", limit=avg - 4.0*risk, stop=beSL, qty_percent=20)
+    strategy.exit("S-TP", "S", limit=shortTP, stop=beSL)
+
+plot(ema50, "EMA50", color=color.orange)
+plot(vwapS, "VWAP", color=color.aqua)

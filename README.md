@@ -156,3 +156,8 @@ Backtesting/optimization is now native to MT5 Strategy Tester:
 Use MT5 Optimization directly with 7m / 12m / 24m date ranges and compare passes by the custom fitness criterion.
 
 > Note: `backtest_pack/` is optional for external report aggregation only; core validation is now fully MQL5-native.
+
+
+## TradingView Pine
+- Added GC strategy: `tradingview/SMC_GC_H4_M15_Ticks.pine`
+- Defaults aligned: H4->M15, structure stop 20-50 ticks band, RR floor/pref/cap 3/5/8, 20% partials at 1R..4R, BE at 50% TP distance.
